@@ -1,0 +1,605 @@
+--- a/chrome/browser/browser_resources.grd
++++ b/chrome/browser/browser_resources.grd
+@@ -88,6 +88,12 @@
+       </if>
+     </structures>
+     <includes>
++      <if expr="not is_android">
++        <include name="IDR_HELIUM_ARC_SIDEBAR_HTML" file="resources/arc_sidebar/index.html" type="BINDATA" />
++        <include name="IDR_HELIUM_ARC_SIDEBAR_CSS" file="resources/arc_sidebar/sidebar.css" type="BINDATA" />
++        <include name="IDR_HELIUM_ARC_SIDEBAR_JS" file="resources/arc_sidebar/sidebar.mjs" type="BINDATA" />
++        <include name="IDR_HELIUM_ARC_SIDEBAR_MODEL_JS" file="resources/arc_sidebar/model.mjs" type="BINDATA" />
++      </if>
+       <if expr="is_win or is_macosx or is_linux">
+         <!-- First Run audio resources -->
+         <include name="IDR_INTRO_SOUND_ALL_SET_FLAC" file="resources\intro\sounds\all_set.flac" type="BINDATA" />
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -1191,7 +1191,13 @@
+   ]
+
+   if (!is_android) {
++    sources += [
++      "helium/arc_sidebar.cc",
++      "helium/arc_sidebar.h",
++    ]
+     deps += [
++      "//components/sessions",
++      "//ui/views/controls/webview",
+       ":chrome_pages",
+       ":chrome_web_modal_dialog_manager_delegate",
+       "//chrome/browser:certificate_viewer",
+--- /dev/null
++++ b/chrome/browser/ui/helium/arc_sidebar.cc
+@@ -0,0 +1,348 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++#include "chrome/browser/ui/helium/arc_sidebar.h"
++
++#include <string>
++#include <utility>
++
++#include "base/base64.h"
++#include "base/functional/bind.h"
++#include "base/json/json_writer.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/ref_counted_memory.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/supports_user_data.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/search_engines/template_url_service_factory.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/tabs/tab_enums.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/grit/browser_resources.h"
++#include "components/prefs/pref_service.h"
++#include "components/search_engines/template_url.h"
++#include "components/search_engines/template_url_service.h"
++#include "components/sessions/content/session_tab_helper.h"
++#include "components/tabs/public/tab_interface.h"
++#include "components/url_formatter/url_fixer.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_ui.h"
++#include "content/public/browser/web_ui_data_source.h"
++#include "content/public/browser/web_ui_message_handler.h"
++#include "services/network/public/mojom/content_security_policy.mojom.h"
++#include "ui/base/clipboard/scoped_clipboard_writer.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/views/controls/webview/webview.h"
++
++namespace helium {
++namespace {
++// Only WebContents created by the sidebar host have this capability. Opening
++// chrome://arc-sidebar in a normal tab does not grant access to browser tabs.
++const char kBrowserKey = 0;
++const char kNodeKey = 0;
++class BrowserData : public base::SupportsUserData::Data {
++ public:
++  explicit BrowserData(Browser* value) : browser(value) {}
++  raw_ptr<Browser> browser;
++};
++class NodeData : public base::SupportsUserData::Data {
++ public:
++  explicit NodeData(std::string value) : id(std::move(value)) {}
++  std::string id;
++};
++
++bool AllowedURL(const GURL& url) {
++  return url.is_valid() && (url.SchemeIsHTTPOrHTTPS() ||
++                            url.SchemeIs("chrome") || url.SchemeIs("helium") ||
++                            url.SchemeIs("about") || url.SchemeIsFile());
++}
++GURL NavigationURL(Profile* profile, const std::string& input) {
++  GURL url = url_formatter::FixupURL(input, std::string());
++  // Text without a scheme, dot, or localhost is a search using the user's
++  // configured search engine. Explicit forbidden schemes are never executed.
++  const bool search =
++      input.find(':') == std::string::npos &&
++      (input.find(' ') != std::string::npos ||
++       (input.find('.') == std::string::npos && input != "localhost"));
++  if (search) {
++    auto* service = TemplateURLServiceFactory::GetForProfile(profile);
++    const auto* provider =
++        service ? service->GetDefaultSearchProvider() : nullptr;
++    if (!provider) {
++      return GURL();
++    }
++    url = GURL(provider->url_ref().ReplaceSearchTerms(
++        TemplateURLRef::SearchTermsArgs(base::UTF8ToUTF16(input)),
++        service->search_terms_data()));
++  }
++  return AllowedURL(url) ? url : GURL();
++}
++
++class ArcSidebarHandler : public content::WebUIMessageHandler,
++                          public TabStripModelObserver {
++ public:
++  explicit ArcSidebarHandler(Browser* browser)
++      : browser_(browser),
++        window_key_(base::NumberToString(browser->GetSessionID().id())) {
++    observation_.Observe(browser_->GetTabStripModel());
++  }
++  ~ArcSidebarHandler() override = default;
++  void RegisterMessages() override {
++    web_ui()->RegisterMessageCallback(
++        "arcSidebar", base::BindRepeating(&ArcSidebarHandler::Handle,
++                                          base::Unretained(this)));
++  }
++  void OnJavascriptDisallowed() override {
++    weak_factory_.InvalidateWeakPtrs();
++    pending_ = false;
++  }
++  void OnTabStripModelChanged(TabStripModel*,
++                              const TabStripModelChange&,
++                              const TabStripSelectionChange&) override {
++    ScheduleUpdate();
++  }
++  void OnTabChangedAt(tabs::TabInterface*, TabChangeType) override {
++    ScheduleUpdate();
++  }
++  void OnTabStripModelDestroyed(TabStripModel*) override {
++    observation_.Reset();
++    browser_ = nullptr;
++    weak_factory_.InvalidateWeakPtrs();
++  }
++
++ private:
++  void ScheduleUpdate() {
++    if (!browser_ || !IsJavascriptAllowed() || pending_) {
++      return;
++    }
++    pending_ = true;
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&ArcSidebarHandler::Update, weak_factory_.GetWeakPtr()));
++  }
++  int IndexForId(int id) const {
++    auto* model = browser_->GetTabStripModel();
++    for (int i = 0; i < model->count(); ++i) {
++      if (sessions::SessionTabHelper::IdForTab(model->GetWebContentsAt(i))
++              .id() == id) {
++        return i;
++      }
++    }
++    return -1;
++  }
++  base::DictValue ReadState() const {
++    const auto& workspaces =
++        browser_->GetProfile()->GetPrefs()->GetDict(kArcSidebarState);
++    const auto* state = workspaces.FindDict(window_key_);
++    if (!state && !browser_->GetProfile()->IsOffTheRecord()) {
++      state = workspaces.FindDict("last");
++    }
++    return state ? state->Clone() : base::DictValue();
++  }
++  void Handle(const base::ListValue& args) {
++    if (!browser_ || args.size() != 2 || !args[0].is_string() ||
++        !args[1].is_dict()) {
++      return;
++    }
++    const auto& command = args[0].GetString();
++    const auto& data = args[1].GetDict();
++    if (command == "ready") {
++      AllowJavascript();
++      Update();
++      return;
++    }
++    if (!IsJavascriptAllowed()) {
++      return;
++    }
++    if (command == "save") {
++      const auto* state = data.FindDict("state");
++      // Bound persistence, validate the schema envelope, and never write to
++      // another profile. OTR profiles use their own in-memory preference store.
++      std::string json;
++      if (!state || state->FindInt("version") != 1 ||
++          !state->FindList("spaces") || !state->FindList("nodes") ||
++          state->FindList("spaces")->size() > 32 ||
++          state->FindList("nodes")->size() > 5000 ||
++          !base::JSONWriter::Write(*state, &json) ||
++          json.size() > 2 * 1024 * 1024) {
++        return;
++      }
++      auto* prefs = browser_->GetProfile()->GetPrefs();
++      auto workspaces = prefs->GetDict(kArcSidebarState).Clone();
++      workspaces.Set(window_key_, state->Clone());
++      workspaces.Set("last", state->Clone());
++      // Retain a bounded number of recent window workspaces.
++      if (workspaces.size() > 33) {
++        std::string oldest;
++        for (auto item : workspaces) {
++          if (item.first != "last" && item.first != window_key_) {
++            oldest = item.first;
++            break;
++          }
++        }
++        if (!oldest.empty()) {
++          workspaces.Remove(oldest);
++        }
++      }
++      prefs->SetDict(kArcSidebarState, std::move(workspaces));
++      return;
++    }
++    auto* model = browser_->GetTabStripModel();
++    const auto id = data.FindInt("tabId");
++    const int index = id ? IndexForId(*id) : model->active_index();
++    if (command == "activate" && index >= 0) {
++      model->ActivateTabAt(index);
++    } else if (command == "close" && id && index >= 0) {
++      // Closing the final tab can destroy this handler. Do not touch members
++      // after the call; model notifications are already coalesced
++      // asynchronously.
++      model->CloseWebContentsAt(index,
++                                TabCloseTypes::CLOSE_USER_GESTURE |
++                                    TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++      return;
++    } else if (command == "open" || command == "navigate") {
++      const auto* input = data.FindString("url");
++      if (!input || input->size() > 8192) {
++        return;
++      }
++      const GURL url = NavigationURL(browser_->GetProfile(), *input);
++      if (!url.is_valid()) {
++        return;
++      }
++      NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++      params.disposition = command == "open"
++                               ? WindowOpenDisposition::NEW_FOREGROUND_TAB
++                               : WindowOpenDisposition::CURRENT_TAB;
++      if (command == "navigate" && index >= 0) {
++        model->ActivateTabAt(index);
++      }
++      Navigate(&params);
++      if (params.navigated_or_inserted_contents) {
++        const auto* node = data.FindString("nodeId");
++        if (node && node->size() <= 128) {
++          params.navigated_or_inserted_contents->SetUserData(
++              &kNodeKey, std::make_unique<NodeData>(*node));
++        }
++      }
++    } else if (command == "back") {
++      if (chrome::CanGoBack(browser_)) {
++        chrome::GoBack(browser_, WindowOpenDisposition::CURRENT_TAB);
++      }
++    } else if (command == "forward") {
++      if (chrome::CanGoForward(browser_)) {
++        chrome::GoForward(browser_, WindowOpenDisposition::CURRENT_TAB);
++      }
++    } else if (command == "reload") {
++      chrome::Reload(browser_, WindowOpenDisposition::CURRENT_TAB);
++    } else if (command == "collapse") {
++      auto* controller = tabs::VerticalTabStripStateController::From(browser_);
++      if (controller) {
++        controller->SetCollapsed(!controller->IsCollapsed());
++      }
++    } else if (command == "settings") {
++      NavigateParams params(browser_, GURL("chrome://settings/"),
++                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
++      params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++      Navigate(&params);
++    } else if (command == "copyURL") {
++      if (auto* active = model->GetActiveWebContents()) {
++        ui::ScopedClipboardWriter(ui::ClipboardBuffer::kCopyPaste)
++            .WriteText(base::UTF8ToUTF16(active->GetVisibleURL().spec()));
++      }
++    }
++    ScheduleUpdate();
++  }
++  void Update() {
++    pending_ = false;
++    if (!browser_ || !IsJavascriptAllowed()) {
++      return;
++    }
++    auto* model = browser_->GetTabStripModel();
++    base::DictValue result;
++    result.Set("windowId", browser_->GetSessionID().id());
++    result.Set("state", ReadState());
++    result.Set("canGoBack", chrome::CanGoBack(browser_));
++    result.Set("canGoForward", chrome::CanGoForward(browser_));
++    base::ListValue tabs;
++    for (int i = 0; i < model->count(); ++i) {
++      auto* contents = model->GetWebContentsAt(i);
++      base::DictValue tab;
++      tab.Set("id", sessions::SessionTabHelper::IdForTab(contents).id());
++      tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
++      tab.Set("url", contents->GetVisibleURL().spec());
++      tab.Set("active", i == model->active_index());
++      tab.Set("pinned", model->IsTabPinned(i));
++      tab.Set("loading", contents->IsLoading());
++      if (auto* node =
++              static_cast<NodeData*>(contents->GetUserData(&kNodeKey))) {
++        tab.Set("nodeId", node->id);
++      }
++      if (auto* entry = contents->GetController().GetLastCommittedEntry()) {
++        const auto& image = entry->GetFavicon().image;
++        if (!image.IsEmpty()) {
++          auto png = image.As1xPNGBytes();
++          if (png && png->size()) {
++            tab.Set("favicon", "data:image/png;base64," +
++                                   base::Base64Encode(base::span(*png)));
++          }
++        }
++      }
++      tabs.Append(std::move(tab));
++    }
++    result.Set("tabs", std::move(tabs));
++    web_ui()->CallJavascriptFunctionUnsafe("arcSidebar.receive", result);
++  }
++  raw_ptr<Browser> browser_;
++  const std::string window_key_;
++  bool pending_ = false;
++  base::ScopedObservation<TabStripModel, TabStripModelObserver> observation_{
++      this};
++  base::WeakPtrFactory<ArcSidebarHandler> weak_factory_{this};
++};
++}  // namespace
++
++ArcSidebarUI::ArcSidebarUI(content::WebUI* web_ui) : WebUIController(web_ui) {
++  auto* contents = web_ui->GetWebContents();
++  auto* source = content::WebUIDataSource::CreateAndAdd(
++      contents->GetBrowserContext(), "arc-sidebar");
++  source->SetDefaultResource(IDR_HELIUM_ARC_SIDEBAR_HTML);
++  source->AddResourcePath("sidebar.css", IDR_HELIUM_ARC_SIDEBAR_CSS);
++  source->AddResourcePath("sidebar.mjs", IDR_HELIUM_ARC_SIDEBAR_JS);
++  source->AddResourcePath("model.mjs", IDR_HELIUM_ARC_SIDEBAR_MODEL_JS);
++  source->OverrideContentSecurityPolicy(
++      network::mojom::CSPDirectiveName::ImgSrc, "img-src 'self' data:;");
++  if (auto* host =
++          static_cast<BrowserData*>(contents->GetUserData(&kBrowserKey))) {
++    web_ui->AddMessageHandler(
++        std::make_unique<ArcSidebarHandler>(host->browser));
++  }
++}
++ArcSidebarUI::~ArcSidebarUI() = default;
++
++std::unique_ptr<views::WebView> CreateArcSidebar(Browser* browser) {
++  auto view = std::make_unique<views::WebView>(browser->GetProfile());
++  view->GetWebContents()->SetUserData(&kBrowserKey,
++                                      std::make_unique<BrowserData>(browser));
++  view->LoadInitialURL(GURL("chrome://arc-sidebar/"));
++  return view;
++}
++void FocusArcSidebarAddress(views::WebView* view) {
++  view->RequestFocus();
++  if (auto* web_ui = view->GetWebContents()->GetWebUI()) {
++    web_ui->CallJavascriptFunctionUnsafe("arcSidebar.focusAddress");
++  }
++}
++}  // namespace helium
+--- /dev/null
++++ b/chrome/browser/ui/helium/arc_sidebar.h
+@@ -0,0 +1,33 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_HELIUM_ARC_SIDEBAR_H_
++#define CHROME_BROWSER_UI_HELIUM_ARC_SIDEBAR_H_
++
++#include <memory>
++#include "content/public/browser/web_ui_controller.h"
++#include "content/public/browser/webui_config.h"
++#include "content/public/common/url_constants.h"
++
++class Browser;
++namespace views {
++class WebView;
++}
++
++namespace helium {
++inline constexpr char kArcSidebarState[] = "helium.arc_sidebar.workspaces";
++class ArcSidebarUI;
++class ArcSidebarUIConfig : public content::DefaultWebUIConfig<ArcSidebarUI> {
++ public:
++  ArcSidebarUIConfig()
++      : DefaultWebUIConfig(content::kChromeUIScheme, "arc-sidebar") {}
++};
++class ArcSidebarUI : public content::WebUIController {
++ public:
++  explicit ArcSidebarUI(content::WebUI* web_ui);
++  ~ArcSidebarUI() override;
++};
++std::unique_ptr<views::WebView> CreateArcSidebar(Browser* browser);
++void FocusArcSidebarAddress(views::WebView* view);
++}  // namespace helium
++#endif  // CHROME_BROWSER_UI_HELIUM_ARC_SIDEBAR_H_
+--- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
++++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
+@@ -8,6 +8,7 @@
+ #include "chrome/browser/ui/actions/chrome_action_id.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
++#include "chrome/browser/ui/helium/arc_sidebar.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+@@ -32,8 +33,9 @@
+       prefs::kEverythingMenuPinnedToTabstripMigrationComplete, false);
+
+   registry->RegisterIntegerPref(prefs::kHeliumLayout,
+-                                std::to_underlying(HeliumLayoutType::kClassic));
++                                std::to_underlying(HeliumLayoutType::kVertical));
+   registry->RegisterBooleanPref(prefs::kHeliumVerticalRightAligned, false);
++  registry->RegisterDictionaryPref(helium::kArcSidebarState);
+   registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
+   registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
+   registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
+--- a/chrome/browser/ui/tabs/vertical_tab_strip_state.h
++++ b/chrome/browser/ui/tabs/vertical_tab_strip_state.h
+@@ -7,7 +7,7 @@
+
+ namespace tabs {
+
+-inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 200;
++inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 260;
+
+ // Per-window state for the vertical tab strip.
+ struct VerticalTabStripState {
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -2980,6 +2980,11 @@
+     return;
+   }
+ #endif
++  if (vertical_tab_strip_region_view_ &&
++      vertical_tab_strip_region_view_->IsArcSidebarVisible()) {
++    vertical_tab_strip_region_view_->FocusArcSidebarAddress();
++    return;
++  }
+   if (!IsLocationBarVisible()) {
+     return;
+   }
+@@ -3692,6 +3697,10 @@
+ }
+
+ bool BrowserView::IsToolbarVisible() const {
++  if (vertical_tab_strip_region_view_ &&
++      vertical_tab_strip_region_view_->IsArcSidebarVisible()) {
++    return false;
++  }
+ #if BUILDFLAG(IS_MAC)
+   // Immersive full screen makes it possible to display the toolbar when
+   // kShowFullscreenToolbar is not set.
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -721,6 +721,12 @@
+   }
+
+   const auto& params = layout_data_->revised_params;
++  // The WebUI owns the navigation controls in expanded Arc mode. Native
++  // caption controls remain over its reserved first-row leading space.
++  if (views().vertical_tab_strip_region_view &&
++      views().vertical_tab_strip_region_view->IsArcSidebarVisible()) {
++    return 0;
++  }
+
+   if (delegate().IsToolbarVisible()) {
+     return GetBoundsWithExclusion(params, views().toolbar).height();
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -34,6 +34,8 @@
+ #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
+ #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/helium/arc_sidebar.h"
++#include "ui/views/controls/webview/webview.h"
+ #include "chrome/browser/ui/view_ids.h"
+ #include "chrome/browser/ui/views/frame/custom_corners_background.h"
+ #include "chrome/browser/ui/views/frame/shadow_frame_view.h"
+@@ -174,6 +176,10 @@
+         std::make_unique<VerticalTabStripFocusSwipeController>(this);
+   }
+
++  arc_sidebar_ = AddChildView(helium::CreateArcSidebar(browser_view->browser()));
++  arc_sidebar_->SetProperty(views::kViewIgnoredByLayoutKey, true);
++  ReorderChildView(resize_area_, children().size() - 1);
++
+   SetNotifyEnterExitOnChild(true);
+   UpdateColors();
+   UpdateInteriorMargin();
+@@ -355,7 +361,28 @@
+   BaseTabStripRegionView::RemovedFromWidget();
+ }
+
++bool VerticalTabStripRegionView::IsArcSidebarVisible() const {
++  return arc_sidebar_ && browser_view()->GetWidget() &&
++         state_controller_->ShouldDisplayVerticalTabs() &&
++         state_controller_->GetCollapseState() ==
++             tabs::VerticalTabStripCollapseState::kExpanded &&
++         !browser_view()->IsZenModeEnabled() && !browser_view()->IsFullscreen();
++}
++
++void VerticalTabStripRegionView::FocusArcSidebarAddress() {
++  if (IsArcSidebarVisible()) {
++    helium::FocusArcSidebarAddress(arc_sidebar_);
++  }
++}
++
+ void VerticalTabStripRegionView::Layout(PassKey) {
++  const bool arc_visible = IsArcSidebarVisible();
++  if (tab_strip_view()) {
++    tab_strip_view()->SetVisible(!arc_visible);
++  }
++  bottom_button_container_->SetVisible(!arc_visible);
++  arc_sidebar_->SetVisible(arc_visible);
++  arc_sidebar_->SetBoundsRect(GetLocalBounds());
+   LayoutSuperclass<views::AccessiblePaneView>(this);
+
+   // Manually position the resize area as it overlaps views handled by the flex
+@@ -375,6 +402,9 @@
+ }
+
+ views::View* VerticalTabStripRegionView::GetDefaultFocusableChild() {
++  if (IsArcSidebarVisible()) {
++    return arc_sidebar_;
++  }
+   tabs::TabInterface* active_tab = tab_strip_model()->GetActiveTab();
+   if (active_tab) {
+     return GetTabAnchorView(active_tab->GetHandle());
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -45,6 +45,7 @@
+ class Separator;
+ class View;
+ class FlexLayout;
++class WebView;
+ }  // namespace views
+
+ // Container for the vertical tabstrip and the other views sharing space with
+@@ -61,7 +62,7 @@
+
+   // TODO(crbug.com/465833741): Replace constant with derived value based on
+   // caption buttons.
+-  static constexpr int kUncollapsedMinWidth = 160;
++  static constexpr int kUncollapsedMinWidth = 240;
+   // TODO(crbug.com/465832180): Replace constant based width final max width for
+   // view.
+   static constexpr int kUncollapsedMaxWidth = 400;
+@@ -89,6 +90,8 @@
+   void SetZenModeFloatingStyleForLayout(bool floating);
+
+   void UpdateInteriorMargin();
++  bool IsArcSidebarVisible() const;
++  void FocusArcSidebarAddress();
+
+   // views::View:
+   void AddedToWidget() override;
+@@ -237,6 +240,7 @@
+
+   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
+   raw_ptr<views::View> gemini_button_ = nullptr;
++  raw_ptr<views::WebView> arc_sidebar_ = nullptr;
+   raw_ptr<views::ResizeArea> resize_area_ = nullptr;
+   raw_ptr<ShadowFrameView> shadow_frame_ = nullptr;
+   int resize_area_width_;
+--- a/chrome/browser/ui/webui/chrome_web_ui_configs.cc
++++ b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+@@ -82,6 +82,7 @@
+ #include "chrome/browser/ui/webui/private_ai_internals/private_ai_internals_ui.h"
+
+ #if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/ui/helium/arc_sidebar.h"
+ #include "chrome/browser/actor/ui/actor_overlay_ui.h"
+ #include "chrome/browser/contextual_cueing/internals/contextual_cueing_internals_ui.h"
+ #include "chrome/browser/ui/tabs/tab_group_home/tab_group_home_ui.h"
+@@ -481,6 +482,7 @@
+   map.AddWebUIConfig(std::make_unique<ManagedUserProfileNoticeUIConfig>());
+   map.AddWebUIConfig(std::make_unique<IntroUIConfig>());
+   map.AddWebUIConfig(std::make_unique<HeliumOnboardingPageConfig>());
++  map.AddWebUIConfig(std::make_unique<helium::ArcSidebarUIConfig>());
+   map.AddWebUIConfig(std::make_unique<ProfileCustomizationUIConfig>());
+   map.AddWebUIConfig(std::make_unique<ProfilePickerUIConfig>());
+   map.AddWebUIConfig(std::make_unique<SigninErrorUIConfig>());

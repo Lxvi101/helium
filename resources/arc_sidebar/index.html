@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sidebar</title>
+  <link rel="stylesheet" href="sidebar.css">
+  <script type="module" src="sidebar.mjs"></script>
+</head>
+<body>
+  <aside id="sidebar" aria-label="Browser sidebar">
+    <header>
+      <div class="toolbar">
+        <div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div>
+        <button id="collapse" class="icon-button" aria-label="Toggle sidebar" title="Toggle sidebar (⌘S)"></button>
+        <div class="spacer"></div>
+        <button id="back" class="icon-button" aria-label="Go back" title="Go back"></button>
+        <button id="forward" class="icon-button" aria-label="Go forward" title="Go forward"></button>
+        <button id="reload" class="icon-button" aria-label="Reload" title="Reload"></button>
+      </div>
+      <form id="address-form" class="address-bar">
+        <input id="address" aria-label="Address or search" spellcheck="false" autocomplete="off" placeholder="Search or enter URL">
+        <button type="button" id="copy-url" class="icon-button" aria-label="Copy current URL" title="Copy current URL"></button>
+        <button type="button" id="settings" class="icon-button" aria-label="Browser settings" title="Browser settings"></button>
+      </form>
+      <div id="favorites" aria-label="Favorites"></div>
+    </header>
+    <div class="space-heading"><button id="space-title" title="Edit space"></button><button id="space-menu" class="icon-button" aria-label="Space options"></button></div>
+    <div id="scroll-area">
+      <div id="pinned" class="tree" role="tree" aria-label="Pinned tabs and folders"></div>
+      <div id="divider"></div>
+      <button id="new-tab"><span class="new-plus">+</span><span>New Tab</span><kbd>⌘T</kbd></button>
+      <div id="tabs" class="tree" role="tree" aria-label="Tabs"></div>
+      <div id="empty" hidden>Make room for a new thought.</div>
+    </div>
+    <footer>
+      <button id="library" class="icon-button" aria-label="History" title="History"></button>
+      <nav id="spaces" aria-label="Spaces"></nav>
+      <button id="add" class="icon-button" aria-label="Add folder or space" title="Add folder or space"></button>
+    </footer>
+    <div id="live" class="sr-only" role="status" aria-live="polite"></div>
+  </aside>
+  <div id="context-menu" role="menu" hidden></div>
+  <dialog id="edit-dialog">
+    <form id="edit-form">
+      <h2 id="dialog-title">New Folder</h2>
+      <input id="edit-name" aria-label="Name" required maxlength="80" autocomplete="off">
+      <div id="colors" aria-label="Space color"></div>
+      <div class="dialog-actions"><button type="button" id="cancel">Cancel</button><button type="submit" class="primary">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="command-dialog">
+    <form id="command-form"><span id="command-search-icon"></span><input id="command-input" aria-label="Search tabs or enter URL" placeholder="Search tabs or enter URL…" autocomplete="off" spellcheck="false"><kbd>esc</kbd></form>
+    <div id="command-results" role="listbox" aria-label="Matching tabs"></div>
+    <div class="command-hint">↵ Open <span>↑ ↓ Navigate</span></div>
+  </dialog>
+</body>
+</html>

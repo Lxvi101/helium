@@ -1,3 +1,5 @@
+> **Fork development:** The `arc-sidebar` branch adds folders, tabs, and spaces inspired by Arc. See [implementation, preview, and verification status](docs/arc-sidebar.md). Native compilation is still pending.
+
 <div align="center">
     <img src="resources/branding/app_icon/raw.png"
         title="Helium" alt="Helium logo" width="120" />

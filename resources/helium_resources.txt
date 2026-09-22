@@ -68,3 +68,9 @@ generated/product_icon/256x256.png chrome/app/theme/chromium/linux/product_logo_
 
 generated/product_icon/16x16.png chrome/app/theme/default_100_percent/chromium/linux/product_logo_16.png
 generated/product_icon/32x32.png chrome/app/theme/default_100_percent/chromium/linux/product_logo_32.png
+
+# Arc sidebar (the preview adapter is development-only)
+arc_sidebar/index.html chrome/browser/resources/arc_sidebar/index.html
+arc_sidebar/sidebar.css chrome/browser/resources/arc_sidebar/sidebar.css
+arc_sidebar/sidebar.mjs chrome/browser/resources/arc_sidebar/sidebar.mjs
+arc_sidebar/model.mjs chrome/browser/resources/arc_sidebar/model.mjs

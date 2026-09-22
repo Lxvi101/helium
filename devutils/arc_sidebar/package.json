@@ -1,0 +1,11 @@
+{
+  "name": "helium-arc-sidebar-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test model.test.mjs browser.test.mjs",
+    "test:model": "node --test model.test.mjs",
+    "test:browser": "node --test browser.test.mjs"
+  },
+  "devDependencies": {"playwright": "1.58.0"}
+}
