@@ -4,6 +4,7 @@ let saved;
 try { saved = JSON.parse(localStorage.getItem('helium-arc-preview')); } catch {}
 let state = saved?.state || createState();
 let tabs = saved?.tabs;
+let animations = saved?.animations !== false;
 let nextId = Math.max(0, ...(tabs || []).map(t => t.id)) + 1;
 if (!tabs) {
   const nodes = [
@@ -38,10 +39,10 @@ if (!tabs) {
   tabs = [{id: nextId++, title: 'MMMHome', url: 'https://mmmhome.io/', active: true}];
 }
 const history = new Map(tabs.map(t => [t.id, {urls: [t.url], index: 0}]));
-function persist() { localStorage.setItem('helium-arc-preview', JSON.stringify({state, tabs})); }
+function persist() { localStorage.setItem('helium-arc-preview', JSON.stringify({state, tabs, animations})); }
 function emit() {
   const active = tabs.find(t => t.active), h = history.get(active?.id);
-  window.arcSidebar.receive({windowId: 1, state: structuredClone(state), tabs: structuredClone(tabs), canGoBack: !!h && h.index > 0, canGoForward: !!h && h.index < h.urls.length - 1});
+  window.arcSidebar.receive({windowId: 1, state: structuredClone(state), tabs: structuredClone(tabs), animations, canGoBack: !!h && h.index > 0, canGoForward: !!h && h.index < h.urls.length - 1});
 }
 function navigate(url) {
   if (!url.includes(':')) url = url.includes('.') && !url.includes(' ') ? `https://${url}` : `https://duckduckgo.com/?q=${encodeURIComponent(url)}`;
@@ -51,6 +52,7 @@ function navigate(url) {
 }
 window.arcPreview = {send(action, data) {
   if (action === 'save') { state = structuredClone(data.state); persist(); return; }
+  if (action === 'setAnimations') animations = !!data.enabled;
   if (action === 'activate') tabs.forEach(t => { t.active = t.id === data.tabId; });
   if (action === 'open' || action === 'settings') {
     tabs.forEach(t => { t.active = false; });

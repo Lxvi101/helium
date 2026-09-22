@@ -1,4 +1,6 @@
 /* Copyright 2026 The Helium Authors. GPL-3.0; see LICENSE. */
+/* Registered so space colors interpolate instead of switching discretely. */
+@property --space { syntax: '<color>'; inherits: true; initial-value: #f6a3a9; }
 :root { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; color: #322b30; color-scheme: light; --space: #f6a3a9; --ink: #322b30; --muted: #725761; --hover: #ffffff20; --selected: #fffaf5e8; --panel: #fff9f6; }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; height: 100dvh; background: var(--space); }
@@ -24,7 +26,8 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .address-bar:focus-within { background: #ffffff60; box-shadow: 0 0 0 2px #ffffff28; }
 .address-bar input { width: 100%; font-size: 13px; font-weight: 550; text-overflow: ellipsis; padding: 0; }
 .address-bar input::placeholder { color: var(--muted); font-weight: 400; }
-.address-bar .icon-button { width: 27px; }
+.address-bar .icon-button { width: 27px; visibility: hidden; }
+.address-bar:hover .icon-button, .address-bar:focus-within .icon-button { visibility: visible; }
 #favorites { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 13px; }
 #favorites:empty { margin-bottom: 0; }
 .favorite { position: relative; height: 49px; background: #8450660e; border-radius: 13px; display: flex; align-items: center; justify-content: center; }
@@ -35,13 +38,17 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #space-title { font-size: 12px; font-weight: 650; letter-spacing: .02em; text-align: left; flex: 1; }
 #space-menu { opacity: 0; }
 .space-heading:hover #space-menu, #space-menu:focus-visible { opacity: .7; }
-#scroll-area { flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #382b3525 transparent; padding-bottom: 8px; }
+/* Spaces are pages of a horizontal carousel that spans the full sidebar width. */
+#space-viewport { flex: 1; min-height: 0; margin: 0 -8px; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+.space-page { flex: 1; min-height: 0; padding: 0 8px; display: flex; flex-direction: column; }
+.space-page.offstage { position: absolute; inset: 0; pointer-events: none; }
+#scroll-area { position: relative; flex: 1; margin: 0 -8px; padding: 0 8px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #382b3525 transparent; padding-bottom: 8px; }
 .row { position: relative; min-height: 39px; border-radius: 9px; display: flex; align-items: center; gap: 10px; padding: 0 10px; user-select: none; margin: 2px 0; cursor: default; }
 .row:hover { background: var(--hover); }
 .row.active { background: var(--selected); box-shadow: 0 1px 3px #784b6219; }
 .row .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; line-height: 1.4; }
 .row.folder { font-weight: 620; }
-.row.folder svg.folder-icon { color: #7075d7; width: 20px; height: 20px; fill: #f9faff; stroke-width: 1.9; }
+.row.folder svg.folder-icon { color: var(--accent); width: 20px; height: 20px; fill: color-mix(in srgb, var(--accent) 12%, #fff); stroke-width: 1.9; }
 .row .disclosure { position: absolute; left: 0; width: 10px; height: 18px; display: flex; align-items: center; opacity: 0; color: var(--muted); }
 .row:hover .disclosure, .row:focus-visible .disclosure { opacity: .8; }
 .disclosure svg { width: 10px; height: 10px; transition: transform .12s; }
@@ -70,9 +77,31 @@ footer { height: 46px; flex: none; display: flex; align-items: center; justify-c
 .space { width: 25px; min-width: 25px; height: 29px; font-size: 17px; border-radius: 7px; opacity: .4; position: relative; }
 .space:hover { opacity: .85; }
 .space[aria-current=true] { opacity: 1; }
-.space[aria-current=true]::after { content: ''; position: absolute; bottom: 0; left: calc(50% - 2px); width: 4px; height: 4px; background: currentColor; border-radius: 50%; }
-.drop-target { background: #fff5 !important; outline: 2px solid #70619c88; outline-offset: -2px; }
-.drop-before { box-shadow: 0 -2px 0 #70619c; }
+/* Drag and drop. The accent is a deeper shade of the space color. */
+:root { --accent: color-mix(in srgb, var(--space) 62%, #5a1c14); }
+@supports (color: oklch(from red l c h)) { :root { --accent: oklch(from var(--space) calc(l * .72) calc(c + .06) h); } }
+.dragging-node, .dragging-node * { cursor: default !important; }
+.drag-source { opacity: .35; }
+.row.drop-into { isolation: isolate; }
+.row.drop-into::before { content: ''; position: absolute; inset: -2px -200px; background: var(--accent); z-index: -1; }
+.space.drop-into { opacity: 1; background: var(--hover); }
+.favorite.placeholder { background: transparent; }
+#drop-line { position: absolute; right: 0; height: 2px; margin-top: -1px; background: var(--accent); pointer-events: none; z-index: 2; }
+#drop-line::before { content: ''; position: absolute; left: -7px; top: -3px; width: 5px; height: 5px; border-radius: 50%; border: 1.5px solid var(--accent); }
+#drag-card { position: fixed; left: 0; top: 0; z-index: 20; pointer-events: none; }
+#drag-card .drag-box { position: absolute; left: 0; top: 0; overflow: hidden; border-radius: 9px; background: #fffaf5f2; box-shadow: 0 8px 22px #3a1f2a29, 0 1px 3px #3a1f2a1f; transform: translate(calc(var(--fx) * -100%), calc(var(--fy) * -100%)); }
+#drag-card.row-form .drag-box { width: var(--row-w); height: 39px; background: #fffaf5c7; }
+#drag-card.tile-form .drag-box { width: var(--tile-w); height: 49px; border-radius: 13px; }
+#drag-card .favicon { position: absolute; top: 50%; left: 10px; transform: translateY(-50%); }
+#drag-card.tile-form .favicon { left: 50%; transform: translate(-50%, -50%) scale(1.18); }
+#drag-card .label { position: absolute; left: 37px; right: 10px; top: 50%; transform: translateY(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+#drag-card.tile-form .label { opacity: 0; }
+#drag-card.over-line .drag-box { background: #fffaf585; }
+#drag-card.over-line .favicon, #drag-card.over-line .label { opacity: .25; }
+.motion #drag-card .drag-box { transition: width .26s cubic-bezier(.2, .8, .2, 1), height .26s cubic-bezier(.2, .8, .2, 1), border-radius .26s ease, background-color .12s ease, transform .26s cubic-bezier(.2, .8, .2, 1), opacity .2s ease, scale .2s ease; }
+.motion #drag-card .favicon, .motion #drag-card .label { transition: left .26s cubic-bezier(.2, .8, .2, 1), transform .26s cubic-bezier(.2, .8, .2, 1), opacity .16s ease; }
+.motion #drag-card.landing { transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+.motion #drag-card.instant, .motion #drag-card.instant * { transition: none !important; }
 #context-menu { position: fixed; z-index: 10; padding: 5px; border-radius: 10px; min-width: 205px; max-width: calc(100vw - 16px); background: #fffaf9f7; box-shadow: 0 10px 30px #492d4933, 0 0 0 1px #7c61711a; backdrop-filter: blur(24px); font-size: 12px; }
 #context-menu button { padding: 7px 9px; display: block; width: 100%; text-align: left; border-radius: 5px; }
 #context-menu button:hover, #context-menu button:focus-visible { background: #ded2e8; }
@@ -89,17 +118,39 @@ h2 { font-size: 16px; font-weight: 620; margin: 0 0 16px; }
 .dialog-actions button { border-radius: 7px; padding: 7px 12px; background: #eee5eb; }
 .dialog-actions .primary { background: #73618b; color: white; }
 #command-dialog { padding: 0; }
+#command-dialog::backdrop { background: transparent; backdrop-filter: none; }
 #command-form { padding: 15px 12px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid #0001; }
 #command-input { width: 100%; font-size: 13px; }
 #command-search-icon { display: flex; color: var(--muted); }
 #command-results { padding: 6px; max-height: 40vh; overflow: auto; }
 .command-result { display: flex; width: 100%; align-items: center; text-align: left; padding: 9px 7px; border-radius: 7px; gap: 9px; }
-.command-result[aria-selected=true], .command-result:hover { background: #e5dbea; }
+.command-result:hover { background: #0000000a; }
+.command-result[aria-selected=true] { background: var(--accent); color: #fff; }
+.command-result[aria-selected=true] .favicon:not(:has(img)) { box-shadow: 0 0 0 1px #fff6; }
 .command-result span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .command-hint { font-size: 10px; color: var(--muted); border-top: 1px solid #0001; padding: 10px 13px; }
 .command-hint span { float: right; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 190px) { .toolbar { gap: 0; } .window-controls { width: 45px; gap: 3px; } .native-mac .toolbar { padding-left: 0; } .address-bar { padding-left: 7px; } #settings { display: none; } }
+/* Animations, matched to Arc: hover and selection change in place, spaces move
+   as a carousel that tracks the trackpad. Enabled only by the
+   helium.arc_sidebar.animations preference when the system does not request
+   reduced motion; see setMotion() in sidebar.mjs. */
+.motion { transition: --space .14s ease-out; }
+.motion .address-bar { transition: background-color .12s ease, box-shadow .12s ease; }
+.space-dot { position: absolute; bottom: 0; left: calc(50% - 2px); width: 4px; height: 4px; background: currentColor; border-radius: 50%; }
+.ghost { position: fixed; margin: 0; z-index: 5; pointer-events: none; }
+.motion dialog { opacity: 0; transform: scale(.98); transition: opacity .15s ease-out, transform .15s ease-out, overlay .15s allow-discrete, display .15s allow-discrete; }
+.motion dialog[open] { opacity: 1; transform: none; }
+.motion #command-dialog, .motion #command-dialog::backdrop { transition: none; }
+.motion #command-dialog[open] { opacity: 1; transform: none; }
+@starting-style { .motion #command-dialog[open] { opacity: 1; transform: none; } }
+.motion dialog::backdrop { background-color: transparent; backdrop-filter: blur(0); transition: background-color .15s ease-out, backdrop-filter .15s ease-out, overlay .15s allow-discrete, display .15s allow-discrete; }
+.motion dialog[open]::backdrop { background-color: #37284630; backdrop-filter: blur(3px); }
+@starting-style {
+  .motion dialog[open] { opacity: 0; transform: scale(.98); }
+  .motion dialog[open]::backdrop { background-color: transparent; backdrop-filter: blur(0); }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 #pinned:empty, #tabs:empty { min-height: 24px; }

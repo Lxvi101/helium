@@ -25,6 +25,21 @@ its visual reference.
   workspace and writes through the off-the-record preference service.
 - Keyboard tree navigation, focus indicators, accessible labels, reduced-motion
   support, folder cycle checks, and safe text rendering.
+- Optional animations modeled on Arc: spaces are pages of a carousel that
+  follows the trackpad 1:1 (the neighboring space shows alongside) and commits
+  or springs back on release, with the space color changing on commit. Tab
+  selection and hover change in place, favorites and menus appear instantly,
+  and rows glide when reordered, fade when added or removed.
+  Dragging follows Arc as well: a card follows the pointer and becomes a tile
+  over Favorites, which open a gap for it; folders fill with a deeper shade of
+  the space color when a drop would nest, and a line marks insert positions.
+  Folder icons, drop feedback, and the palette's selected result use that same
+  deeper shade; address actions appear on hover, and the command palette opens
+  without a backdrop.
+  Toggle with **Sidebar animations** in the space menu or **Animate the
+  sidebar** in Appearance settings (`helium.arc_sidebar.animations`, on by
+  default, shared by all windows of a profile). The system reduced-motion
+  setting always disables them.
 
 ## Source layout
 

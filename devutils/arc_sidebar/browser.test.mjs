@@ -75,7 +75,7 @@ test('spaces create, recolor, switch, and retain their own active tabs', async (
   assert.equal(await page.getByRole('treeitem', {name: 'MMMHome', exact: true}).getAttribute('aria-selected'), 'true');
   await page.getByRole('button', {name: 'Studio space', exact: true}).click();
   assert.equal(await page.getByRole('treeitem', {name: 'New Tab', exact: true}).count(), 1);
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--space').trim()), '#9bbec4');
+  assert.equal(await page.evaluate(() => document.documentElement.style.getPropertyValue('--space')), '#9bbec4');
 });
 test('palette opens a new tab, pins survive closing and reopen once', async () => {
   await page.locator('#new-tab').click();
@@ -113,4 +113,120 @@ test('folders reorder at the leading edge without becoming nested', async () => 
 test('horizontal trackpad gestures switch spaces', async () => {
   await page.locator('#sidebar').dispatchEvent('wheel', {deltaX: 130, deltaY: 0});
   assert.equal(await page.getByRole('button', {name: 'Work space', exact: true}).getAttribute('aria-current'), 'true');
+});
+async function withMotion(run) {
+  const motionContext = await browser.newContext({viewport: {width: 260, height: 800}, reducedMotion: 'no-preference'});
+  const motionPage = await motionContext.newPage();
+  const motionErrors = [];
+  motionPage.on('pageerror', e => motionErrors.push(e.message));
+  try {
+    await motionPage.goto('http://127.0.0.1:4174/resources/arc_sidebar/index.html');
+    await motionPage.getByRole('treeitem', {name: 'MMMHome', exact: true}).waitFor();
+    await run(motionPage);
+    assert.deepEqual(motionErrors, [], 'no uncaught browser errors with animations');
+  } finally { await motionContext.close(); }
+}
+const settled = p => p.waitForFunction(() => !document.getAnimations().some(a => a.playState === 'running'));
+test('animations follow the preference and the system reduced-motion setting', async () => {
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('motion')), false);
+  await withMotion(async p => {
+    assert.equal(await p.evaluate(() => document.documentElement.classList.contains('motion')), true);
+    await p.getByRole('button', {name: 'Space options', exact: true}).click();
+    const toggle = p.getByRole('menuitemcheckbox', {name: 'Sidebar animations', exact: true});
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    await toggle.click();
+    assert.equal(await p.evaluate(() => document.documentElement.classList.contains('motion')), false);
+    await p.reload();
+    await p.getByRole('treeitem', {name: 'MMMHome', exact: true}).waitFor();
+    assert.equal(await p.evaluate(() => document.documentElement.classList.contains('motion')), false);
+  });
+});
+test('space switches slide the carousel with both spaces side by side', async () => {
+  await withMotion(async p => {
+    await p.getByRole('button', {name: 'Work space', exact: true}).click();
+    const during = await p.evaluate(() => {
+      const [page] = document.querySelectorAll('.space-page.offstage');
+      return {pages: document.querySelectorAll('.space-page.offstage').length, outgoing: page?.querySelector('#space-title').textContent, color: document.documentElement.style.getPropertyValue('--space')};
+    });
+    assert.deepEqual(during, {pages: 1, outgoing: 'Personal', color: '#b7a0d8'});
+    await settled(p);
+    assert.equal(await p.locator('.space-page.offstage').count(), 0);
+    assert.equal(await p.locator('#space-title').textContent(), 'Work');
+    assert.equal(await p.getByRole('treeitem', {name: 'Apple Updates', exact: true}).count(), 1);
+  });
+});
+test('trackpad swipes track the fingers, then commit or spring back', async () => {
+  await withMotion(async p => {
+    const wheel = deltaX => p.locator('#sidebar').dispatchEvent('wheel', {deltaX, deltaY: 0});
+    for (let i = 0; i < 4; i++) await wheel(5);
+    const tracked = await p.evaluate(() => ({
+      content: document.getElementById('space-content').style.transform,
+      peek: document.querySelector('.space-page.offstage #space-title').textContent,
+      color: document.documentElement.style.getPropertyValue('--space'),
+    }));
+    assert.deepEqual(tracked, {content: 'translateX(-20px)', peek: 'Work', color: '#f6a3a9'});
+    await p.waitForTimeout(200); await settled(p);
+    assert.equal(await p.locator('#space-title').textContent(), 'Personal');
+    assert.equal(await p.locator('.space-page.offstage').count(), 0);
+    for (let i = 0; i < 8; i++) await wheel(12);
+    await p.waitForTimeout(200); await settled(p);
+    assert.equal(await p.locator('#space-title').textContent(), 'Work');
+    assert.equal(await p.evaluate(() => getComputedStyle(document.getElementById('space-content')).transform), 'none');
+    assert.equal(await p.locator('.space-page.offstage').count(), 0);
+  });
+});
+test('tab switching selects the row in place', async () => {
+  await withMotion(async p => {
+    await p.locator('#new-tab').click();
+    await p.getByRole('textbox', {name: 'Search tabs or enter URL', exact: true}).fill('https://example.org/');
+    await p.getByRole('textbox', {name: 'Search tabs or enter URL', exact: true}).press('Enter');
+    await p.getByRole('treeitem', {name: 'example.org', exact: true}).waitFor();
+    await p.getByRole('treeitem', {name: 'MMMHome', exact: true}).click();
+    await settled(p);
+    const row = p.getByRole('treeitem', {name: 'MMMHome', exact: true});
+    assert.equal(await row.getAttribute('aria-selected'), 'true');
+    assert.notEqual(await row.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+    assert.equal(await p.getByRole('treeitem', {name: 'example.org', exact: true}).evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+    await p.getByRole('treeitem', {name: 'Merida Trip', exact: true}).click();
+    await settled(p);
+    assert.equal(await p.locator('.ghost').count(), 0);
+  });
+});
+test('drag and drop shows Arc feedback: folder fill, insertion line, and a gap in Favorites', async () => {
+  await withMotion(async p => {
+    const box = async name => p.getByRole('treeitem', {name, exact: true}).boundingBox();
+    const s = await box('Spotify');
+    await p.mouse.move(s.x + 60, s.y + 20); await p.mouse.down();
+    const folder = await box('Merida Trip');
+    await p.mouse.move(folder.x + 60, folder.y + 22, {steps: 4});
+    assert.equal(await p.locator('.row.drop-into').getAttribute('aria-label'), 'Merida Trip');
+    assert.equal(await p.locator('#drag-card.row-form').count(), 1);
+    const nested = await box('Travel Docs');
+    await p.mouse.move(nested.x + 60, nested.y + 3, {steps: 3});
+    assert.equal(await p.locator('#drop-line').isVisible(), true);
+    assert.equal(await p.locator('.row.drop-into').count(), 0);
+    const tile = await p.locator('#favorites button').nth(1).boundingBox();
+    await p.mouse.move(tile.x + 10, tile.y + 25, {steps: 4});
+    assert.equal(await p.locator('#drag-card.tile-form').count(), 1);
+    assert.equal(await p.evaluate(() => [...document.getElementById('favorites').children].findIndex(e => e.classList.contains('placeholder'))), 1);
+    await p.mouse.up(); await settled(p); await p.waitForTimeout(250);
+    assert.equal(await p.locator('#drag-card').count(), 0);
+    assert.deepEqual(await p.locator('#favorites button').evaluateAll(b => b.map(e => e.getAttribute('aria-label'))), ['Notes', 'Spotify', 'Gmail', 'Instapaper']);
+    assert.equal(await p.getByRole('treeitem', {name: 'Spotify', exact: true}).count(), 0);
+  });
+});
+test('dragging a favorite out closes its gap and returns it to the list', async () => {
+  await withMotion(async p => {
+    const tile = await p.locator('#favorites button').first().boundingBox();
+    await p.mouse.move(tile.x + 20, tile.y + 20); await p.mouse.down();
+    const pinned = await p.getByRole('treeitem', {name: 'Spotify', exact: true}).boundingBox();
+    await p.mouse.move(pinned.x + 60, pinned.y + 30, {steps: 5});
+    assert.equal(await p.locator('#drop-line').isVisible(), true);
+    assert.equal(await p.locator('#favorites .placeholder').count(), 0);
+    assert.equal(await p.locator('#favorites button:not([hidden])').count(), 2);
+    assert.equal(await p.locator('#drag-card.row-form').count(), 1);
+    await p.mouse.up(); await settled(p);
+    assert.equal(await p.locator('#favorites button').count(), 2);
+    assert.equal(await p.getByRole('treeitem', {name: 'Notes', exact: true}).count(), 1);
+  });
 });

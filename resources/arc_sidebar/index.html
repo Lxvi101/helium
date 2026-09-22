@@ -26,13 +26,18 @@
       </form>
       <div id="favorites" aria-label="Favorites"></div>
     </header>
-    <div class="space-heading"><button id="space-title" title="Edit space"></button><button id="space-menu" class="icon-button" aria-label="Space options"></button></div>
-    <div id="scroll-area">
-      <div id="pinned" class="tree" role="tree" aria-label="Pinned tabs and folders"></div>
-      <div id="divider"></div>
-      <button id="new-tab"><span class="new-plus">+</span><span>New Tab</span><kbd>⌘T</kbd></button>
-      <div id="tabs" class="tree" role="tree" aria-label="Tabs"></div>
-      <div id="empty" hidden>Make room for a new thought.</div>
+    <div id="space-viewport">
+      <div id="space-content" class="space-page">
+        <div class="space-heading"><button id="space-title" title="Edit space"></button><button id="space-menu" class="icon-button" aria-label="Space options"></button></div>
+        <div id="scroll-area">
+          <div id="pinned" class="tree" role="tree" aria-label="Pinned tabs and folders"></div>
+          <div id="divider"></div>
+          <button id="new-tab"><span class="new-plus">+</span><span>New Tab</span><kbd>⌘T</kbd></button>
+          <div id="tabs" class="tree" role="tree" aria-label="Tabs"></div>
+          <div id="empty" hidden>Make room for a new thought.</div>
+          <div id="drop-line" hidden></div>
+        </div>
+      </div>
     </div>
     <footer>
       <button id="library" class="icon-button" aria-label="History" title="History"></button>

@@ -31,7 +31,7 @@
        "//chrome/browser:certificate_viewer",
 --- /dev/null
 +++ b/chrome/browser/ui/helium/arc_sidebar.cc
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,371 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -62,7 +62,9 @@
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 +#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/common/pref_names.h"
 +#include "chrome/grit/browser_resources.h"
++#include "components/prefs/pref_change_registrar.h"
 +#include "components/prefs/pref_service.h"
 +#include "components/search_engines/template_url.h"
 +#include "components/search_engines/template_url_service.h"
@@ -132,6 +134,13 @@
 +      : browser_(browser),
 +        window_key_(base::NumberToString(browser->GetSessionID().id())) {
 +    observation_.Observe(browser_->GetTabStripModel());
++    // Animation preference is global to the profile, including its incognito
++    // windows, so it is read from and written to the original profile.
++    pref_registrar_.Init(AnimationPrefs());
++    pref_registrar_.Add(
++        prefs::kHeliumArcSidebarAnimations,
++        base::BindRepeating(&ArcSidebarHandler::ScheduleUpdate,
++                            base::Unretained(this)));
 +  }
 +  ~ArcSidebarHandler() override = default;
 +  void RegisterMessages() override {
@@ -153,6 +162,7 @@
 +  }
 +  void OnTabStripModelDestroyed(TabStripModel*) override {
 +    observation_.Reset();
++    pref_registrar_.RemoveAll();
 +    browser_ = nullptr;
 +    weak_factory_.InvalidateWeakPtrs();
 +  }
@@ -176,6 +186,9 @@
 +      }
 +    }
 +    return -1;
++  }
++  PrefService* AnimationPrefs() const {
++    return browser_->GetProfile()->GetOriginalProfile()->GetPrefs();
 +  }
 +  base::DictValue ReadState() const {
 +    const auto& workspaces =
@@ -232,6 +245,13 @@
 +        }
 +      }
 +      prefs->SetDict(kArcSidebarState, std::move(workspaces));
++      return;
++    }
++    if (command == "setAnimations") {
++      if (const auto enabled = data.FindBool("enabled")) {
++        AnimationPrefs()->SetBoolean(prefs::kHeliumArcSidebarAnimations,
++                                     *enabled);
++      }
 +      return;
 +    }
 +    auto* model = browser_->GetTabStripModel();
@@ -310,6 +330,8 @@
 +    result.Set("state", ReadState());
 +    result.Set("canGoBack", chrome::CanGoBack(browser_));
 +    result.Set("canGoForward", chrome::CanGoForward(browser_));
++    result.Set("animations",
++               AnimationPrefs()->GetBoolean(prefs::kHeliumArcSidebarAnimations));
 +    base::ListValue tabs;
 +    for (int i = 0; i < model->count(); ++i) {
 +      auto* contents = model->GetWebContentsAt(i);
@@ -342,6 +364,7 @@
 +  raw_ptr<Browser> browser_;
 +  const std::string window_key_;
 +  bool pending_ = false;
++  PrefChangeRegistrar pref_registrar_;
 +  base::ScopedObservation<TabStripModel, TabStripModelObserver> observation_{
 +      this};
 +  base::WeakPtrFactory<ArcSidebarHandler> weak_factory_{this};
@@ -426,7 +449,7 @@
  #include "chrome/browser/ui/tabs/features.h"
  #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
  #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
-@@ -32,8 +33,9 @@
+@@ -32,8 +33,10 @@
        prefs::kEverythingMenuPinnedToTabstripMigrationComplete, false);
  
    registry->RegisterIntegerPref(prefs::kHeliumLayout,
@@ -434,6 +457,7 @@
 +                                std::to_underlying(HeliumLayoutType::kVertical));
    registry->RegisterBooleanPref(prefs::kHeliumVerticalRightAligned, false);
 +  registry->RegisterDictionaryPref(helium::kArcSidebarState);
++  registry->RegisterBooleanPref(prefs::kHeliumArcSidebarAnimations, true);
    registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
@@ -603,3 +627,63 @@
    map.AddWebUIConfig(std::make_unique<ProfileCustomizationUIConfig>());
    map.AddWebUIConfig(std::make_unique<ProfilePickerUIConfig>());
    map.AddWebUIConfig(std::make_unique<SigninErrorUIConfig>());
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -633,6 +633,10 @@
+ // A boolean pref set to true if vertical tabs should be on the right side.
+ inline constexpr char kHeliumVerticalRightAligned[] =
+     "helium.browser.vertical_right_aligned";
++
++// A boolean pref set to true if the Arc sidebar animates its interactions.
++inline constexpr char kHeliumArcSidebarAnimations[] =
++    "helium.arc_sidebar.animations";
+ 
+ // A boolean pref set to true if zen mode is enabled.
+ inline constexpr char kHeliumZenMode[] = "helium.browser.zen_mode";
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -221,6 +221,8 @@
+   // Helium layout
+   (*s_allowlist)[::prefs::kHeliumLayout] = settings_api::PrefType::kNumber;
+   (*s_allowlist)[::prefs::kHeliumVerticalRightAligned] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumArcSidebarAnimations] =
+       settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumCenteredLocationBar] =
+       settings_api::PrefType::kBoolean;
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -304,6 +304,9 @@
+     <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
+       Show vertical tabs on right side
+     </message>
++    <message name="IDS_SETTINGS_ARC_SIDEBAR_ANIMATIONS" desc="Label for the toggle that enables animations in the vertical sidebar.">
++      Animate the sidebar
++    </message>
+     <message name="IDS_SETTINGS_CENTERED_LOCATION_BAR" desc="Label for the toggle to use a centered address bar.">
+       Centered address bar
+     </message>
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -607,6 +607,7 @@
+       {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
+       {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
+       {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
++      {"arcSidebarAnimations", IDS_SETTINGS_ARC_SIDEBAR_ANIMATIONS},
+       {"browserZenMode", IDS_SETTINGS_BROWSER_ZEN_MODE},
+       {"browserZenModeDescription", IDS_SETTINGS_BROWSER_ZEN_MODE_DESCRIPTION},
+       {"zenModePinSidebar", IDS_SETTINGS_ZEN_PIN_SIDEBAR},
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
+@@ -80,6 +80,11 @@
+           label="$i18n{tabStripRightAlign}">
+       </settings-toggle-button>
+       <settings-toggle-button class="hr"
++          ?hidden="${!this.showVerticalSettings_()}"
++          pref-key="helium.arc_sidebar.animations"
++          label="$i18n{arcSidebarAnimations}">
++      </settings-toggle-button>
++      <settings-toggle-button class="hr"
+           ?hidden="${!this.showCenteredLocationBarSetting_()}"
+           pref-key="helium.browser.centered_location_bar"
+           label="$i18n{centeredLocationBar}">
