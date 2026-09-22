@@ -17,7 +17,7 @@
 +++ b/chrome/browser/ui/BUILD.gn
 @@ -1191,7 +1191,13 @@
    ]
-
+ 
    if (!is_android) {
 +    sources += [
 +      "helium/arc_sidebar.cc",
@@ -428,7 +428,7 @@
  #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 @@ -32,8 +33,9 @@
        prefs::kEverythingMenuPinnedToTabstripMigrationComplete, false);
-
+ 
    registry->RegisterIntegerPref(prefs::kHeliumLayout,
 -                                std::to_underlying(HeliumLayoutType::kClassic));
 +                                std::to_underlying(HeliumLayoutType::kVertical));
@@ -440,12 +440,12 @@
 --- a/chrome/browser/ui/tabs/vertical_tab_strip_state.h
 +++ b/chrome/browser/ui/tabs/vertical_tab_strip_state.h
 @@ -7,7 +7,7 @@
-
+ 
  namespace tabs {
-
+ 
 -inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 200;
 +inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 260;
-
+ 
  // Per-window state for the vertical tab strip.
  struct VerticalTabStripState {
 --- a/chrome/browser/ui/views/frame/browser_view.cc
@@ -464,7 +464,7 @@
    }
 @@ -3692,6 +3697,10 @@
  }
-
+ 
  bool BrowserView::IsToolbarVisible() const {
 +  if (vertical_tab_strip_region_view_ &&
 +      vertical_tab_strip_region_view_->IsArcSidebarVisible()) {
@@ -477,7 +477,7 @@
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 @@ -721,6 +721,12 @@
    }
-
+ 
    const auto& params = layout_data_->revised_params;
 +  // The WebUI owns the navigation controls in expanded Arc mode. Native
 +  // caption controls remain over its reserved first-row leading space.
@@ -485,7 +485,7 @@
 +      views().vertical_tab_strip_region_view->IsArcSidebarVisible()) {
 +    return 0;
 +  }
-
+ 
    if (delegate().IsToolbarVisible()) {
      return GetBoundsWithExclusion(params, views().toolbar).height();
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
@@ -502,7 +502,7 @@
 @@ -174,6 +176,10 @@
          std::make_unique<VerticalTabStripFocusSwipeController>(this);
    }
-
+ 
 +  arc_sidebar_ = AddChildView(helium::CreateArcSidebar(browser_view->browser()));
 +  arc_sidebar_->SetProperty(views::kViewIgnoredByLayoutKey, true);
 +  ReorderChildView(resize_area_, children().size() - 1);
@@ -513,7 +513,7 @@
 @@ -355,7 +361,28 @@
    BaseTabStripRegionView::RemovedFromWidget();
  }
-
+ 
 +bool VerticalTabStripRegionView::IsArcSidebarVisible() const {
 +  return arc_sidebar_ && browser_view()->GetWidget() &&
 +         state_controller_->ShouldDisplayVerticalTabs() &&
@@ -537,11 +537,11 @@
 +  arc_sidebar_->SetVisible(arc_visible);
 +  arc_sidebar_->SetBoundsRect(GetLocalBounds());
    LayoutSuperclass<views::AccessiblePaneView>(this);
-
+ 
    // Manually position the resize area as it overlaps views handled by the flex
 @@ -375,6 +402,9 @@
  }
-
+ 
  views::View* VerticalTabStripRegionView::GetDefaultFocusableChild() {
 +  if (IsArcSidebarVisible()) {
 +    return arc_sidebar_;
@@ -557,10 +557,10 @@
  class FlexLayout;
 +class WebView;
  }  // namespace views
-
+ 
  // Container for the vertical tabstrip and the other views sharing space with
 @@ -61,7 +62,7 @@
-
+ 
    // TODO(crbug.com/465833741): Replace constant with derived value based on
    // caption buttons.
 -  static constexpr int kUncollapsedMinWidth = 160;
@@ -570,15 +570,15 @@
    static constexpr int kUncollapsedMaxWidth = 400;
 @@ -89,6 +90,8 @@
    void SetZenModeFloatingStyleForLayout(bool floating);
-
+ 
    void UpdateInteriorMargin();
 +  bool IsArcSidebarVisible() const;
 +  void FocusArcSidebarAddress();
-
+ 
    // views::View:
    void AddedToWidget() override;
 @@ -237,6 +240,7 @@
-
+ 
    raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
    raw_ptr<views::View> gemini_button_ = nullptr;
 +  raw_ptr<views::WebView> arc_sidebar_ = nullptr;
@@ -589,7 +589,7 @@
 +++ b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
 @@ -82,6 +82,7 @@
  #include "chrome/browser/ui/webui/private_ai_internals/private_ai_internals_ui.h"
-
+ 
  #if !BUILDFLAG(IS_ANDROID)
 +#include "chrome/browser/ui/helium/arc_sidebar.h"
  #include "chrome/browser/actor/ui/actor_overlay_ui.h"
