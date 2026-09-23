@@ -15,3 +15,6 @@ __pycache__/
 # Ignore generated resources
 /resources/generated
 /devutils/i18n-data
+
+# Sidebar preview test dependencies
+/devutils/arc_sidebar/node_modules/

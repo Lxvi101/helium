@@ -1,0 +1,41 @@
+name: Arc Sidebar
+
+on:
+  push:
+    branches: [arc-sidebar]
+  pull_request:
+    paths:
+      - 'resources/arc_sidebar/**'
+      - 'devutils/arc_sidebar/**'
+      - 'patches/helium/ui/layout/arc-sidebar.patch'
+      - '.github/workflows/arc-sidebar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sidebar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: devutils/arc_sidebar/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - run: npm ci --prefix devutils/arc_sidebar
+      - run: npx playwright install chromium --with-deps
+        working-directory: devutils/arc_sidebar
+      - run: mkdir -p build && npm test --prefix devutils/arc_sidebar
+      - run: python3 devutils/validate_config.py
+      - run: python3 devutils/arc_sidebar/validate_native_patch.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sidebar-preview
+          path: build/arc-sidebar-personal.png
