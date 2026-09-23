@@ -31,6 +31,9 @@ def copy_resources(resource_list, resource_dir, chromium_dir):
             source = os.path.join(resource_dir, line_parts[0])
             dest = os.path.join(chromium_dir, line_parts[1])
 
+            # Resources for new features may live in directories that
+            # upstream Chromium does not have.
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copyfile(source, dest)
             print(f"Copied {line_parts[0]} to {line_parts[1]}")
 
